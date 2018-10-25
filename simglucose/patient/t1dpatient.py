@@ -26,12 +26,12 @@ class T1DPatient(Patient):
             - params: a pandas sequence
             - init_state: customized initial state.
               If not specified, load the default initial state in
-              params.iloc[2:15]
+              params.iloc[1:19]
             - t0: simulation start time, it is 0 by default
         '''
         self._params = params
         if init_state is None:
-            init_state = self._params.iloc[2:15]
+            init_state = self._params.iloc[1:19]
         self.init_state = init_state
         self.t0 = t0
         self.reset()
@@ -155,26 +155,33 @@ class T1DPatient(Patient):
             Et = 0
 
         # glucose kinetics
-        dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - params.k1 * x[3] + params.k2 * x[4]
+        # plus dextrose IV injection input u[2] if needed
+        dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - \
+            params.k1 * x[3] + params.k2 * x[4]
         dxdt[3] = (x[3] >= 0) * dxdt[3]
-        Gt = x[3] / params.Vg 
+        Gt = x[3] / params.Vg
 
-        Uidt = (params.Vm0 + params.Vmx * x[6] * (1 + params.r3 * risk)) * x [4] / (params.Km0 * x[4])
+        if Gt < params.Gth:
+            fG = np.log((params.Gth / params.Gb) ** params.r1)
+        else:
+            fG = np.log((Gt / params.Gb) ** params.r1)
         if Gt > params.Gb:
-            risk = 0 
+            risk = 0
         else:
             risk = 10 * fG**2
-        if Gt < params.Gth:
-            fG = np.log((params.Gth / parms.Gb) ** r3)
-        else:
-            fG = np.log((Gt / parms.Gb) ** r3)
-            
+         # print(risk)
+
+
+        Vmt = params.Vm0 + params.Vmx * x[6]
+        Kmt = params.Km0
+        # Uidt = Vmt * x[4] / (Kmt + x[4])
+        Uidt = Vmt * (1 + params.r3 * risk) * x[4] / (Kmt + x[4])
         dxdt[4] = -Uidt + params.k1 * x[3] - params.k2 * x[4]
         dxdt[4] = (x[4] >= 0) * dxdt[4]
 
         # insulin kinetics
-        dxdt[5] = -(params.m2 + params.m4) * x[5] + params.m1 * x[9] + params.ka1 * Rai
-        Rai = params.ka1 * x[10] + params.ka2 * x[11]
+        dxdt[5] = -(params.m2 + params.m4) * x[5] + params.m1 * x[9] + params.ka1 * \
+            x[10] + params.ka2 * x[11]  # plus insulin IV injection u[3] if needed
         It = x[5] / params.Vi
         dxdt[5] = (x[5] >= 0) * dxdt[5]
 
@@ -200,25 +207,32 @@ class T1DPatient(Patient):
         # subcutaneous glcuose
         dxdt[12] = (-params.ksc * x[12] + params.ksc * x[3])
         dxdt[12] = (x[12] >= 0) * dxdt[12]
-        
+
         # Glucagon kinetics and secretion
-        dxdt[13] = -params.k01g * x[13] + SRt + Rah
+        SRd = params.kGSRd * max(-dxdt[3] / params.Vg, 0)
         SRt = x[15] + SRd
-        if Gt >= params.Gb:
-            dxdt[15] = -params.r2 * (x[15] - max(params.kGSRs * (params.Gth - Gt) + params.SRb , 0)) 
-        else:
-            dxdt[15] = -params.r2 * (x[15] - max((params.kGSRs * (params.Gth - Gt)) / (It + 1) + params.SRb , 0)
-        SRd = params.kGSRd * max(-dxdt[3] / Vg, 0)
-        
+        #Rah = params.SQgluc_k2 * x[17]
+        dxdt[13] = -params.k01g * x[13] + SRt
+        dxdt[13] = (x[13] >= 0) * dxdt[13]
+
         # Endogenous glucose production
-        dxdt[14] = -kXGn * x[14] + kXGn * max((x[13] - Gnb))
-                                     
+        dxdt[14] = -params.kXGn * x[14] + params.kXGn * max(x[13] - params.Gnb, 0)
+
+        if It >= params.Ith:
+            dxdt[15] = -params.r2 * (x[15] - max(params.kGSRs * (params.Gth - Gt) / (It - params.Ith + 1) + params.SRb , 0))
+        else:
+            dxdt[15] = -params.r2 * (x[15] - max(params.kGSRs * (params.Gth - Gt) + params.SRb , 0))
+
+
+        dxdt[15] = (x[15] >= 0) * dxdt[15]
+
+
         # subcutaneous glucagon kinetic
         dxdt[16] = -(params.SQgluc_k1 + params.SQgluc_kc1) * x[16]
+        dxdt[16] = (x[16] >= 0) * dxdt[16]
         dxdt[17] = params.SQgluc_k1 * x[16] -params.SQgluc_k2 * x[17]
-        Rah = params.SQgluc_k2 * x[17]
-                                     
-                                     
+        dxdt[17] = (x[17] >= 0) * dxdt[17]
+
         if action.insulin > basal:
             logger.debug('t = {}, injecting insulin: {}'.format(
                 t, action.insulin))
@@ -232,7 +246,7 @@ class T1DPatient(Patient):
         for now, only the subcutaneous glucose level is returned
         TODO: add heart rate as an observation
         '''
-        GM = self.state[12]  # subcutaneous glucose (mg/kg)
+        GM = self.state[12]  # subcutaneous glucose (mg/dl)
         Gsub = GM / self._params.Vg
         observation = Observation(Gsub=Gsub)
         return observation
